@@ -43,6 +43,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_stub(algorithm_cls) -> bool:
+    """True when an algorithm class raises NotImplementedError from its own __init__.
+
+    Detected from the source rather than by constructing it, since construction needs a
+    model. See #76: KTO, ORPO and RLOO are registered but not implemented.
+    """
+    import inspect
+
+    try:
+        source = inspect.getsource(algorithm_cls.__init__)
+    except (OSError, TypeError):
+        return False
+    return "raise NotImplementedError" in source
+
+
 def _check_typer():
     """Check if typer is available."""
     if not TYPER_AVAILABLE:
@@ -55,9 +70,27 @@ if TYPER_AVAILABLE:
     app = typer.Typer(
         name="thinkrl",
         help="ThinkRL: RLHF Training Framework for Reasoning Models",
-        add_completion=False,
+        add_completion=True,
         rich_markup_mode="rich",
     )
+
+    def _version_callback(value: bool):
+        if value:
+            import thinkrl
+
+            typer.echo(f"thinkrl {thinkrl.__version__}")
+            raise typer.Exit()
+
+    def _not_implemented(command: str, issue: int) -> None:
+        """Exit non-zero from a command that has no implementation.
+
+        Printing a note and returning 0 makes an unimplemented command indistinguishable
+        from a completed one in a script or a CI job.
+        """
+        typer.echo(f"Error: `thinkrl {command}` is not implemented yet.", err=True)
+        typer.echo(f"       Tracking issue: https://github.com/ellanorai/ThinkRL/issues/{issue}", err=True)
+        typer.echo("       Implemented today: `thinkrl grpo`, `thinkrl star`.", err=True)
+        raise typer.Exit(code=1)
 
     @app.command()
     def train(
@@ -112,8 +145,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"Model: {cfg.model.name_or_path}")
         typer.echo(f"Strategy: {cfg.distributed.strategy}")
 
-        # TODO: Implement actual training loop
-        typer.echo("\nNote: Training implementation pending")
+        _not_implemented("train", 118)
 
     @app.command()
     def generate(
@@ -136,8 +168,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"Prompts: {prompts}")
         typer.echo(f"Output: {output}")
 
-        # TODO: Implement generation
-        typer.echo("\nNote: Generation implementation pending")
+        _not_implemented("generate", 65)
 
     @app.command()
     def merge(
@@ -223,9 +254,20 @@ if TYPER_AVAILABLE:
         # Show available algorithms
         from thinkrl.algorithms import ALGORITHMS
 
+        # Some registered algorithms raise NotImplementedError from __init__ (see #76),
+        # so listing every registry key as available contradicts what they do.
+        implemented, stubs = [], []
+        for name, cls in ALGORITHMS.items():
+            (stubs if _is_stub(cls) else implemented).append(name)
+
         typer.echo("Available algorithms:")
-        for name in ALGORITHMS:
+        for name in implemented:
             typer.echo(f"  - {name}")
+        if stubs:
+            typer.echo()
+            typer.echo("Registered but not implemented (raise NotImplementedError):")
+            for name in stubs:
+                typer.echo(f"  - {name}")
         typer.echo()
 
         # Show config if provided
@@ -318,9 +360,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"Packing: {packing}")
         typer.echo()
 
-        # TODO: Implement SFT training
-        typer.echo("Note: SFT training implementation pending")
-        typer.echo("This will use thinkrl.training.SFTTrainer")
+        _not_implemented("sft", 65)
 
     @app.command()
     def dpo(
@@ -361,9 +401,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"BF16: {bf16}")
         typer.echo()
 
-        # TODO: Implement DPO training
-        typer.echo("Note: DPO training implementation pending")
-        typer.echo("This will use thinkrl.algorithms.DPOAlgorithm")
+        _not_implemented("dpo", 65)
 
     @app.command()
     def ppo(
@@ -405,9 +443,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"BF16: {bf16}")
         typer.echo()
 
-        # TODO: Implement PPO training
-        typer.echo("Note: PPO training implementation pending")
-        typer.echo("This will use thinkrl.algorithms.PPOAlgorithm")
+        _not_implemented("ppo", 65)
 
     from thinkrl.cli.grpo import grpo as grpo_cmd
     from thinkrl.cli.star import star as star_cmd
@@ -449,9 +485,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"BF16: {bf16}")
         typer.echo()
 
-        # TODO: Implement reward model training
-        typer.echo("Note: Reward model training implementation pending")
-        typer.echo("This will use thinkrl.models.RewardModel")
+        _not_implemented("reward", 65)
 
     @app.command()
     def orpo(
@@ -489,9 +523,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"BF16: {bf16}")
         typer.echo()
 
-        # TODO: Implement ORPO training
-        typer.echo("Note: ORPO training implementation pending")
-        typer.echo("This will use thinkrl.algorithms.ORPOAlgorithm")
+        _not_implemented("orpo", 76)
 
     @app.command()
     def kto(
@@ -529,9 +561,7 @@ if TYPER_AVAILABLE:
         typer.echo(f"BF16: {bf16}")
         typer.echo()
 
-        # TODO: Implement KTO training
-        typer.echo("Note: KTO training implementation pending")
-        typer.echo("This will use thinkrl.algorithms.KTOAlgorithm")
+        _not_implemented("kto", 76)
 
     @app.command()
     def reinforce_pp(
@@ -810,9 +840,13 @@ if TYPER_AVAILABLE:
             sys.exit(1)
 
     @app.callback()
-    def callback():
+    def callback(
+        version: Annotated[
+            bool,
+            Option("--version", "-V", help="Show the version and exit", callback=_version_callback, is_eager=True),
+        ] = False,
+    ):
         """ThinkRL: RLHF Training Framework for Reasoning Models"""
-        pass
 
 else:
     # Fallback when typer is not available
