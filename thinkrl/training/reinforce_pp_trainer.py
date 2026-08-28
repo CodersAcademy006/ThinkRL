@@ -9,6 +9,7 @@ from thinkrl.algorithms.reinforce_pp import REINFORCEPPAlgorithm, REINFORCEPPCon
 from thinkrl.data.datasets import RLHFDataset
 from thinkrl.data.loaders import RLHFDataLoader
 from thinkrl.integration.vllm_client import VLLMClient
+from thinkrl.utils.checkpoint import CheckpointManager, save_training_checkpoint
 from thinkrl.utils.logging import get_logger
 
 
@@ -101,10 +102,30 @@ class ReinforcePPTrainer:
             # Verify compatibility before starting
             self.vllm_client.check_weights(self.algorithm.policy_model)
 
-    def train(self, steps: int = 1000, batch_size: int = 4, log_interval: int = 10):
+    def train(
+        self,
+        steps: int = 1000,
+        batch_size: int = 4,
+        log_interval: int = 10,
+        checkpoint_dir: str | None = None,
+        save_every: int = 0,
+        max_checkpoints: int = 5,
+    ):
         """
         Main training loop.
+
+        Args:
+            steps: Number of optimisation steps to run.
+            batch_size: Prompts per rollout.
+            log_interval: Steps between log lines.
+            checkpoint_dir: Where to write checkpoints. Nothing is written without it.
+            save_every: Save every N steps; 0 disables periodic saves. A final checkpoint is
+                still written whenever checkpoint_dir is set.
+            max_checkpoints: How many checkpoints to keep before the oldest rotates out.
         """
+        checkpointer = (
+            CheckpointManager(checkpoint_dir, max_checkpoints=max_checkpoints) if checkpoint_dir else None
+        )
         try:
             from tqdm import tqdm
         except ImportError:
@@ -137,8 +158,19 @@ class ReinforcePPTrainer:
 
         step = 0
         epoch = 0
+        step_metrics: dict[str, Any] = {}
 
         progress_bar = tqdm(total=steps, desc="Training")
+
+        def checkpoint():
+            return save_training_checkpoint(
+                checkpointer,
+                model=self.algorithm.policy_model,
+                optimizer=getattr(self.algorithm, "optimizer", None),
+                epoch=epoch,
+                step=step,
+                metrics=step_metrics,
+            )
 
         while step < steps:
             for batch_prompts in dataloader:
@@ -220,9 +252,13 @@ class ReinforcePPTrainer:
                 progress_bar.update(1)
                 step += 1
 
+                if save_every and step % save_every == 0:
+                    checkpoint()
+
             epoch += 1
 
         progress_bar.close()
+        checkpoint()
 
     def make_experience(self, batch_prompts: dict[str, Any]) -> dict[str, torch.Tensor]:
         """
