@@ -179,12 +179,25 @@ class GRPOTrainer:
 
                 rewards = self.reward_fn(prompts_text, completions_text, **kwargs).to(self.device)
 
-                # Trim if batch size mismatch
-                curr_bs = len(prompts_text)
+                curr_bs = len(completions_text)
                 if rewards.shape[0] != curr_bs:
-                    rewards = rewards[:curr_bs]
+                    raise ValueError(
+                        f"reward_fn returned {rewards.shape[0]} rewards for {curr_bs} "
+                        f"completions. It must return exactly one reward per completion, "
+                        f"in prompt-major order ({len(batch_prompts['prompt_text'])} prompts "
+                        f"x {num_return_sequences} samples)."
+                    )
 
                 rollout_data["rewards"] = rewards
+
+                grouped = rewards.view(-1, num_return_sequences)
+                dead = int((grouped.std(dim=1, unbiased=False) == 0).sum())
+                if dead:
+                    logger.warning(
+                        f"Step {step}: {dead}/{grouped.shape[0]} groups have zero reward "
+                        f"variance, so they contribute no gradient. The reward function may "
+                        f"not be discriminating between completions."
+                    )
 
                 # 3. Train Step
                 # Executes the GRPO Inner Loop via `train_on_rollout`, computing group-relative
