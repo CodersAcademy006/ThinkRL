@@ -91,6 +91,24 @@ def test_the_cli_exposes_the_vllm_options():
     assert "vllm_sync_world_size" in params
 
 
+def test_full_fp16_finetuning_is_rejected_before_loading_anything():
+    """Without --lora-r, --fp16 means the trainable params ARE the fp16 base model, which
+    check_optimizable_dtype always rejected -- just not until after both models and the
+    full dataset had already loaded. Catch it at argument-parse time instead."""
+    result = runner.invoke(app, [*BASE, "--fp16"])
+
+    assert result.exit_code == 1
+    assert "--lora-r" in result.output
+
+
+def test_fp16_with_lora_is_the_supported_combination_and_is_not_rejected():
+    """models/actor.py casts only non-LoRA params to fp16 and leaves the trainable LoRA
+    adapters in fp32, so this combination never hits check_optimizable_dtype at all."""
+    result = runner.invoke(app, [*BASE, "--fp16", "--lora-r", "8", "--dry-run"])
+
+    assert "not supported" not in result.output
+
+
 def test_the_worker_is_exposed_as_a_console_script():
     """It was a complete FastAPI server with its own main() that nothing ran."""
     import pathlib

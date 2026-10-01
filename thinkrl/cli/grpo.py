@@ -154,6 +154,24 @@ def grpo(
         )
         raise typer.Exit(1)
 
+    # Full fp16 fine-tuning is rejected later anyway, by check_optimizable_dtype at
+    # GRPOAlgorithm construction (Adam's eps underflows to 0.0 in float16, so a step turns
+    # every weight to nan while the loss stays finite -- see #113). By then the policy
+    # model, the ref model, the tokenizer and the full dataset have all already loaded.
+    # Reject here instead, before any of that work starts. --lora-r changes the answer:
+    # models/actor.py casts only non-LoRA params to fp16 and leaves the LoRA adapters
+    # (the trainable ones) in fp32, so --fp16 --lora-r is the supported, memory-efficient
+    # combination and must not be rejected.
+    if fp16 and not lora_r:
+        typer.echo(
+            "Error: --fp16 without --lora-r is not supported. Adam-family optimizers "
+            "cannot update float16 weights in place (eps underflows to 0.0), so training "
+            "would produce nan after one step. Use --bf16 for full fine-tuning, or add "
+            "--lora-r to train fp32 adapters over a frozen fp16 base.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     from thinkrl.utils import set_seed
 
     set_seed(seed)

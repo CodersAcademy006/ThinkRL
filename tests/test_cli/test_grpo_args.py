@@ -44,7 +44,13 @@ def mock_tokenizer():
 
 
 def test_grpo_args_fp16(mock_trainer, mock_get_model, mock_dataset, mock_tokenizer):
-    """Test that --fp16 flag is correctly passed."""
+    """Test that --fp16 flag is correctly passed.
+
+    --lora-r is required alongside --fp16 here because full fp16 fine-tuning (no LoRA) is
+    now rejected before this point: it is the configuration check_optimizable_dtype always
+    rejected eventually (Adam's eps underflows to 0.0 in float16), just not until after the
+    policy model, ref model and dataset had already loaded. See test_grpo_dead_flags.py.
+    """
     result = runner.invoke(
         app,
         [
@@ -56,6 +62,8 @@ def test_grpo_args_fp16(mock_trainer, mock_get_model, mock_dataset, mock_tokeniz
             "--dataset",
             "fake_dataset",
             "--fp16",
+            "--lora-r",
+            "8",
             "--batch-size",
             "4",
         ],
