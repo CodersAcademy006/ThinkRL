@@ -70,6 +70,17 @@ def test_group_size_is_read_from_whichever_config_is_in_play():
     assert 'getattr(source_config, "group_size", None)' in source
 
 
+def test_kl_controller_fields_are_read_from_whichever_config_is_in_play():
+    """DrGRPOConfig uses kl_coeff, not beta, and has no kl_controller_type or target_kl
+    field at all, so train() reading self.config.kl_controller_type unconditionally
+    would raise AttributeError the moment train() is called with algorithm=dr_grpo."""
+    source = inspect.getsource(GRPOTrainer.train)
+
+    assert 'getattr(self.config, "kl_controller_type", "fixed")' in source
+    assert 'getattr(self.config, "target_kl", 0.01)' in source
+    assert 'getattr(self.config, "beta", 0.04)' in source
+
+
 @pytest.mark.parametrize("name", ROLLOUT_FAMILY)
 def test_each_algorithm_still_constructs(name):
     """Guards the claim that these five are constructible today, since #132 found COPO was

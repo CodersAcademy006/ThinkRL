@@ -174,6 +174,21 @@ class GRPOTrainer:
             eval_batch_size: Prompts per generation batch during evaluation.
             eval_max_new_tokens: Generation budget per prompt during evaluation.
         """
+        # "fixed" (the default) leaves self.algorithm.kl_controller at None, so compute_loss
+        # falls back to the static cfg.beta path and nothing changes for existing callers.
+        # getattr defaults match #124's pattern: `algorithm=` can be a non-GRPO config
+        # (DAPO/VAPO/PRIME/Dr.GRPO) that never defined these fields.
+        kl_controller_type = getattr(self.config, "kl_controller_type", "fixed")
+        if kl_controller_type != "fixed":
+            from thinkrl.training.kl_controller import KLController
+
+            self.algorithm.kl_controller = KLController(
+                init_kl_coef=getattr(self.config, "beta", 0.04),
+                target_kl=getattr(self.config, "target_kl", 0.01),
+                controller_type=kl_controller_type,
+                total_steps=steps * getattr(self.config, "n_epochs", 1),
+            )
+
         inspector = RolloutInspector(every=inspect_every, num_samples=inspect_samples)
         evaluator = build_periodic_evaluator(
             model=unwrap_model(self.algorithm.policy_model),

@@ -55,6 +55,15 @@ def test_grpo_config_validation():
         GRPOConfig(group_size=1)  # Must be > 1
     with pytest.raises(AssertionError):
         GRPOConfig(beta=-0.1)  # Must be non-negative
+    with pytest.raises(AssertionError):
+        GRPOConfig(target_kl=0.0)  # Must be positive
+
+
+def test_grpo_config_kl_controller_defaults():
+    """Default stays static-beta, matching the pre-controller behaviour."""
+    config = GRPOConfig()
+    assert config.kl_controller_type == "fixed"
+    assert config.target_kl == 0.01
 
 
 # --- Tests for GRPO Algorithm Logic ---
@@ -190,6 +199,46 @@ def test_train_on_rollout_loop(grpo_algo):
             assert len(metrics) == 2
             assert metrics[0]["epoch"] == 0
             assert metrics[1]["epoch"] == 1
+
+
+def test_compute_loss_without_a_kl_controller_uses_static_beta(grpo_algo):
+    """The default (no controller attached) must reproduce the old behaviour exactly."""
+    assert grpo_algo.kl_controller is None
+
+    batch = {
+        "input_ids": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "attention_mask": torch.ones((4, 5)),
+        "labels": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "rewards": torch.randn(4),
+        "old_log_probs": torch.randn(4, 5),
+    }
+
+    loss_dict = grpo_algo.compute_loss(batch)
+
+    assert loss_dict["kl_coef"] == grpo_algo.config.beta
+
+
+def test_compute_loss_with_a_kl_controller_adapts_beta(policy_model, ref_model, grpo_config):
+    """An attached controller must drive beta instead of the static config value, and
+    must adapt AFTER this step (metrics reports what was actually used)."""
+    from thinkrl.training.kl_controller import KLController
+
+    controller = KLController(init_kl_coef=0.04, target_kl=0.01, controller_type="adaptive", kl_lr=0.5)
+    algo = GRPOAlgorithm(policy_model, ref_model=ref_model, config=grpo_config, kl_controller=controller)
+
+    batch = {
+        "input_ids": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "attention_mask": torch.ones((4, 5)),
+        "labels": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "rewards": torch.randn(4),
+        "old_log_probs": torch.randn(4, 5),
+    }
+
+    loss_dict = algo.compute_loss(batch)
+
+    assert loss_dict["kl_coef"] == 0.04, "must use the PRE-update coefficient for this step's loss"
+    assert controller.step == 1
+    assert controller.get_kl_coef() != 0.04, "the controller must have adapted for the next step"
 
 
 def test_no_ref_model_warning():

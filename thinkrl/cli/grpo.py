@@ -41,6 +41,17 @@ def grpo(
     output_dir: Annotated[Path, Option("--output-dir", "-o", help="Output directory")] = Path("./grpo_output"),
     learning_rate: Annotated[float, Option("--learning-rate", "--lr", help="Learning rate")] = 1e-6,
     kl_coeff: Annotated[float, Option("--kl-coeff", help="KL penalty coefficient")] = 0.04,
+    kl_controller_type: Annotated[
+        str,
+        Option(
+            "--kl-controller-type",
+            help="'fixed' (static --kl-coeff, the default), 'adaptive', 'linear', or "
+            "'cosine' -- adapts the KL coefficient toward --target-kl during training",
+        ),
+    ] = "fixed",
+    target_kl: Annotated[
+        float, Option("--target-kl", help="Target KL divergence for adaptive/linear/cosine controllers")
+    ] = 0.01,
     group_size: Annotated[int, Option("--group-size", "-g", help="Group size")] = 64,
     num_train_epochs: Annotated[int, Option("--num-train-epochs", "--epochs", help="Number of training epochs")] = 1,
     per_device_train_batch_size: Annotated[int, Option("--batch-size", "-b", help="Per-device batch size")] = 4,
@@ -154,6 +165,16 @@ def grpo(
         )
         raise typer.Exit(1)
 
+    from thinkrl.training.kl_controller import KLControllerType
+
+    known_kl_controllers = {c.value for c in KLControllerType}
+    if kl_controller_type not in known_kl_controllers:
+        typer.echo(
+            f"Error: --kl-controller-type={kl_controller_type!r} is not one of {sorted(known_kl_controllers)}.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     from thinkrl.utils import set_seed
 
     set_seed(seed)
@@ -168,6 +189,9 @@ def grpo(
     typer.echo(f"LoRA Rank: {lora_r}")
     typer.echo(f"LoRA Init: {lora_init}")
     typer.echo(f"KL Coeff: {kl_coeff}")
+    typer.echo(f"KL Controller: {kl_controller_type}")
+    if kl_controller_type != "fixed":
+        typer.echo(f"Target KL: {target_kl}")
     typer.echo(f"Epochs: {num_train_epochs}")
     typer.echo(f"Batch size: {per_device_train_batch_size}")
     typer.echo(f"BF16 Enabled: {bf16}")
@@ -328,6 +352,8 @@ def grpo(
             group_size=group_size,
             beta=kl_coeff,
             n_epochs=num_train_epochs,
+            kl_controller_type=kl_controller_type,
+            target_kl=target_kl,
         ),
         use_vllm=(str(use_vllm).lower() == "true"),
         vllm_group_port=vllm_group_port,

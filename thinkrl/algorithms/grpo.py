@@ -26,6 +26,7 @@ from torch.optim import Optimizer
 
 from thinkrl.algorithms.base import BaseRLHFAlgorithm
 from thinkrl.models.loss import GRPOLoss
+from thinkrl.training.kl_controller import KLController
 from thinkrl.utils.logging import get_logger
 
 
@@ -44,6 +45,12 @@ class GRPOConfig:
     # Training Loop
     n_epochs: int = 1  # Number of optimization epochs per rollout batch (mu in Alg 1)
 
+    # KL control. "fixed" keeps beta static at the value above (the pre-existing
+    # behaviour); "adaptive"/"linear"/"cosine" hand beta over to kl_controller.py, which
+    # was fully built and never called from here.
+    kl_controller_type: str = "fixed"
+    target_kl: float = 0.01
+
     # Stability
     clip_grad_norm: float = 1.0
     advantage_eps: float = 1e-8
@@ -54,6 +61,7 @@ class GRPOConfig:
     def __post_init__(self):
         assert self.group_size > 1, "group_size must be > 1 to compute variance"
         assert self.beta >= 0, "beta (KL coeff) must be non-negative"
+        assert self.target_kl > 0, "target_kl must be positive"
 
 
 class GRPOAlgorithm(BaseRLHFAlgorithm):
@@ -69,6 +77,7 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         policy_model: nn.Module,
         ref_model: nn.Module | None = None,
         optimizer: Optimizer | None = None,
+        kl_controller: KLController | None = None,
         config: GRPOConfig | None = None,
         **kwargs,
     ):
@@ -90,6 +99,7 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         )
 
         self.config: GRPOConfig = config
+        self.kl_controller = kl_controller
 
         # Initialize Loss Function
         self.loss_fn = GRPOLoss(clip_eps=config.clip_epsilon, beta=config.beta)
@@ -190,8 +200,13 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         ratio_ref = torch.exp(log_ratio_ref)
         kl_div = ratio_ref - log_ratio_ref - 1.0
 
-        # 6-8. Compute GRPO Loss using GRPOLoss
-        self.loss_fn.beta = cfg.beta
+        with torch.no_grad():
+            kl_mean = (kl_div * token_mask).sum() / num_tokens
+
+        # 6-8. Compute GRPO Loss using GRPOLoss. A kl_controller adapts beta toward
+        # target_kl using the PREVIOUS step's measured KL; fixed (the default) reproduces
+        # the old static-beta behaviour exactly, since get_kl_coef() never moves from cfg.beta.
+        self.loss_fn.beta = self.kl_controller.get_kl_coef() if self.kl_controller else cfg.beta
         total_loss, metrics_loss = self.loss_fn(
             log_probs=log_probs,
             old_log_probs=old_log_probs,
@@ -199,6 +214,8 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
             kl_div=kl_div,
             action_mask=token_mask,
         )
+        if self.kl_controller is not None:
+            self.kl_controller.update(kl_mean.item())
 
         # Metrics - detach for logging
         with torch.no_grad():
@@ -206,7 +223,8 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
             # We don't need to recompute it manually.
 
             metrics = {
-                "kl_mean": (kl_div * token_mask).sum() / num_tokens,
+                "kl_mean": kl_mean,
+                "kl_coef": self.loss_fn.beta,
                 "advantage_mean": advantages.mean(),
                 "reward_mean": rewards.mean(),
                 "reward_std": rewards.std(),

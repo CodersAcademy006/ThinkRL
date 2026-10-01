@@ -91,6 +91,13 @@ def test_the_cli_exposes_the_vllm_options():
     assert "vllm_sync_world_size" in params
 
 
+def test_an_unknown_kl_controller_type_is_rejected():
+    result = runner.invoke(app, [*BASE, "--kl-controller-type", "pid"])
+
+    assert result.exit_code == 1
+    assert "pid" in result.output
+
+
 def test_the_worker_is_exposed_as_a_console_script():
     """It was a complete FastAPI server with its own main() that nothing ran."""
     import pathlib
