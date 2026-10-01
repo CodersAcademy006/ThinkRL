@@ -820,12 +820,46 @@ def save_training_checkpoint(
     )
 
 
+def load_training_checkpoint(
+    manager: CheckpointManager | None,
+    resume_from: str | None,
+    model: nn.Module,
+    optimizer: Optimizer | None = None,
+    scheduler: _LRScheduler | None = None,
+    device: torch.device | None = None,
+) -> tuple[int, int]:
+    """Resolve `resume_from` ("latest", "best", or an explicit checkpoint path) against a
+    CheckpointManager and load it into model/optimizer/scheduler in place.
+
+    Mirrors save_training_checkpoint's shape: tolerates a missing manager so a trainer can
+    call this unconditionally, and returns plain (epoch, step) ints -- (0, 0) when there is
+    nothing to resume from -- rather than CheckpointManager's raw metadata dict, since that
+    is all a training loop needs to pick its starting point back up.
+    """
+    if manager is None or resume_from is None:
+        return 0, 0
+
+    if resume_from == "latest":
+        metadata = manager.load_latest_checkpoint(model=model, optimizer=optimizer, scheduler=scheduler, device=device)
+    elif resume_from == "best":
+        metadata = manager.load_best_checkpoint(model=model, optimizer=optimizer, scheduler=scheduler, device=device)
+    else:
+        metadata = manager.load_checkpoint(
+            resume_from, model=model, optimizer=optimizer, scheduler=scheduler, device=device
+        )
+
+    if not metadata:
+        return 0, 0
+    return int(metadata.get("epoch") or 0), int(metadata.get("step") or 0)
+
+
 # Public API
 __all__ = [
     "CheckpointManager",
     "save_checkpoint",
     "save_training_checkpoint",
     "load_checkpoint",
+    "load_training_checkpoint",
     "save_config",
     "load_config",
 ]

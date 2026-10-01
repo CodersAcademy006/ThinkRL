@@ -13,7 +13,7 @@ from thinkrl.evaluation.periodic import build_periodic_evaluator
 from thinkrl.integration.vllm_client import VLLMClient
 from thinkrl.logging.rollout import RolloutInspector
 from thinkrl.training.distributed import unwrap_model, wrap_policy
-from thinkrl.utils.checkpoint import CheckpointManager, save_training_checkpoint
+from thinkrl.utils.checkpoint import CheckpointManager, load_training_checkpoint, save_training_checkpoint
 from thinkrl.utils.logging import get_logger
 
 
@@ -146,6 +146,7 @@ class GRPOTrainer:
         checkpoint_dir: str | None = None,
         save_every: int = 0,
         max_checkpoints: int = 5,
+        resume_from: str | None = None,
         eval_dataset: Any = None,
         eval_every: int = 0,
         eval_batch_size: int = 8,
@@ -155,7 +156,8 @@ class GRPOTrainer:
         Main training loop.
 
         Args:
-            steps: Number of optimisation steps to run.
+            steps: Absolute step target. Unaffected by resume_from: resuming moves the
+                starting step forward instead, so fewer new rollouts run to reach it.
             batch_size: Prompts per rollout.
             log_interval: Steps between log lines.
             inspect_every: Print a sample of prompts, completions and rewards every N
@@ -166,6 +168,14 @@ class GRPOTrainer:
             save_every: Save every N steps; 0 disables periodic saves. A final checkpoint is
                 still written whenever checkpoint_dir is set.
             max_checkpoints: How many checkpoints to keep before the oldest rotates out.
+            resume_from: "latest", "best", or an explicit checkpoint path under
+                checkpoint_dir. Requires checkpoint_dir, since that is where the manager
+                looks; a crash otherwise loses the run even though the checkpoint is on disk.
+                Restores model, optimizer and (if attached) scheduler state plus the
+                epoch/step counters. Does not restore the dataloader's position within an
+                epoch -- it reshuffles from the top -- which GRPO's rollouts tolerate better
+                than supervised training does, since every step samples fresh completions
+                for whichever prompts it draws rather than replaying a fixed batch.
             eval_dataset: Optional held-out set, evaluated with the same reward function.
                 Training reward is the quantity being optimized, so it rises whether or not
                 the policy improves; a held-out number that diverges from it is what
@@ -174,6 +184,8 @@ class GRPOTrainer:
             eval_batch_size: Prompts per generation batch during evaluation.
             eval_max_new_tokens: Generation budget per prompt during evaluation.
         """
+        if resume_from and not checkpoint_dir:
+            raise ValueError("resume_from requires checkpoint_dir, since that is where it looks for a checkpoint")
         inspector = RolloutInspector(every=inspect_every, num_samples=inspect_samples)
         evaluator = build_periodic_evaluator(
             model=unwrap_model(self.algorithm.policy_model),
@@ -196,6 +208,18 @@ class GRPOTrainer:
             if checkpoint_dir
             else None
         )
+
+        start_epoch, start_step = load_training_checkpoint(
+            checkpointer,
+            resume_from,
+            model=unwrap_model(self.algorithm.policy_model),
+            optimizer=getattr(self.algorithm, "optimizer", None),
+            scheduler=getattr(self.algorithm, "scheduler", None),
+            device=self.device,
+        )
+        if resume_from:
+            logger.info(f"Resumed from {resume_from!r} at epoch {start_epoch}, step {start_step}")
+
         try:
             from tqdm import tqdm
         except ImportError:
@@ -231,11 +255,11 @@ class GRPOTrainer:
             padding_side="left",
         )
 
-        step = 0
-        epoch = 0
+        step = start_step
+        epoch = start_epoch
         step_metrics: dict[str, Any] = {}
 
-        progress_bar = tqdm(total=steps, desc="Training")
+        progress_bar = tqdm(total=steps, initial=step, desc="Training")
 
         def checkpoint():
             return save_training_checkpoint(

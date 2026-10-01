@@ -91,6 +91,23 @@ def test_the_cli_exposes_the_vllm_options():
     assert "vllm_sync_world_size" in params
 
 
+def test_resume_without_save_every_is_rejected():
+    """Checkpoints are only written when periodic saving is on; without it --resume would
+    have nothing under --output-dir/checkpoints to find."""
+    result = runner.invoke(app, [*BASE, "--resume", "latest"])
+
+    assert result.exit_code == 1
+    assert "--save-every" in result.output
+
+
+def test_resume_with_save_every_reaches_the_trainer():
+    params = inspect.signature(GRPOTrainer.train).parameters
+
+    assert "resume_from" in params
+    assert "checkpoint_dir" in params
+    assert "save_every" in params
+
+
 def test_the_worker_is_exposed_as_a_console_script():
     """It was a complete FastAPI server with its own main() that nothing ran."""
     import pathlib

@@ -110,6 +110,20 @@ def grpo(
         ),
     ] = False,
     dry_run: Annotated[bool, Option("--dry-run", help="Initialize and validate, but do not train")] = False,
+    save_every: Annotated[
+        int, Option("--save-every", help="Save a checkpoint every N steps. 0 disables periodic saves.")
+    ] = 0,
+    max_checkpoints: Annotated[
+        int, Option("--max-checkpoints", help="Checkpoints to keep before the oldest rotates out")
+    ] = 5,
+    resume: Annotated[
+        str | None,
+        Option(
+            "--resume",
+            help="Resume from a checkpoint under --output-dir/checkpoints: 'latest', 'best', "
+            "or an explicit checkpoint path. Requires --save-every (checkpoints must exist to resume from).",
+        ),
+    ] = None,
 ):
     """
     Group Relative Policy Optimization (GRPO).
@@ -154,6 +168,19 @@ def grpo(
         )
         raise typer.Exit(1)
 
+    if resume and save_every == 0:
+        typer.echo(
+            "Error: --resume needs --save-every > 0. Checkpoints are only written when "
+            "periodic saving is on, so there would be nothing under --output-dir/checkpoints "
+            "to resume from on this invocation.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if save_every < 0:
+        typer.echo(f"Error: --save-every={save_every} must be non-negative.", err=True)
+        raise typer.Exit(1)
+
     from thinkrl.utils import set_seed
 
     set_seed(seed)
@@ -176,6 +203,8 @@ def grpo(
     typer.echo(f"Logging Backend: {logging_backend}")
     typer.echo(f"Max Length: {max_length}")
     typer.echo(f"Max Samples: {max_samples if max_samples else 'All'}")
+    typer.echo(f"Save Every: {save_every if save_every else 'disabled'}")
+    typer.echo(f"Resume: {resume if resume else 'no'}")
     typer.echo(f"System Prompt: {system_prompt}")
     typer.echo()
 
@@ -351,7 +380,14 @@ def grpo(
             err=True,
         )
         raise typer.Exit(code=1)
-    trainer.train(steps=total_steps, batch_size=per_device_train_batch_size)
+    trainer.train(
+        steps=total_steps,
+        batch_size=per_device_train_batch_size,
+        checkpoint_dir=str(output_dir / "checkpoints") if save_every else None,
+        save_every=save_every,
+        max_checkpoints=max_checkpoints,
+        resume_from=resume,
+    )
 
     typer.echo("Training complete.")
 

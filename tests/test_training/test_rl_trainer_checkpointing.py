@@ -2,13 +2,16 @@
 
 import inspect
 
+import pytest
 import torch
 import torch.nn as nn
+import torch.optim as optim
 
 import thinkrl.training.grpo_trainer as grpo_trainer
 import thinkrl.training.reinforce_pp_trainer as reinforce_pp_trainer
 import thinkrl.training.star_trainer as star_trainer
-from thinkrl.utils.checkpoint import CheckpointManager, save_training_checkpoint
+from thinkrl.training.grpo_trainer import GRPOTrainer
+from thinkrl.utils.checkpoint import CheckpointManager, load_training_checkpoint, save_training_checkpoint
 
 
 class _TinyLM(nn.Module):
@@ -77,3 +80,74 @@ def test_rotation_keeps_max_checkpoints(tmp_path):
         save_training_checkpoint(manager, model=model, step=step)
 
     assert len(manager.checkpoints) <= 2
+
+
+def test_grpo_trainer_accepts_resume_from():
+    """GRPO first: resume lands here before the other two RL trainers get it.
+
+    A crash loses the run anyway if nothing can load the checkpoint back in.
+    """
+    params = inspect.signature(GRPOTrainer.train).parameters
+    assert "resume_from" in params
+    assert params["resume_from"].default is None, "must stay opt-in"
+
+
+def test_resume_without_a_checkpoint_dir_is_rejected():
+    """resume_from names a checkpoint under checkpoint_dir; without one there is nowhere
+    to look, and silently training from scratch would be the wrong kind of quiet."""
+    trainer = GRPOTrainer.__new__(GRPOTrainer)  # avoid constructing a real model/tokenizer
+
+    with pytest.raises(ValueError, match="checkpoint_dir"):
+        GRPOTrainer.train(trainer, resume_from="latest", checkpoint_dir=None)
+
+
+def test_load_training_checkpoint_is_a_no_op_without_a_manager():
+    assert load_training_checkpoint(None, "latest", model=_TinyLM()) == (0, 0)
+
+
+def test_load_training_checkpoint_is_a_no_op_without_resume_from(tmp_path):
+    """A manager existing is not consent to resume; resume_from is the opt-in."""
+    manager = CheckpointManager(tmp_path, max_checkpoints=5)
+    save_training_checkpoint(manager, model=_TinyLM(), epoch=3, step=70, metrics={"loss": 0.1})
+
+    assert load_training_checkpoint(manager, None, model=_TinyLM()) == (0, 0)
+
+
+def test_load_training_checkpoint_restores_latest(tmp_path):
+    manager = CheckpointManager(tmp_path, max_checkpoints=5)
+    saved = _TinyLM()
+    with torch.no_grad():
+        saved.head.weight.fill_(1.23)
+    save_training_checkpoint(manager, model=saved, epoch=3, step=70, metrics={"loss": 0.1})
+
+    restored = _TinyLM()
+    optimizer = optim.SGD(restored.parameters(), lr=0.01)
+    epoch, step = load_training_checkpoint(manager, "latest", model=restored, optimizer=optimizer)
+
+    assert (epoch, step) == (3, 70)
+    assert torch.allclose(restored.head.weight, saved.head.weight)
+
+
+def test_load_training_checkpoint_restores_best(tmp_path):
+    manager = CheckpointManager(tmp_path, max_checkpoints=5, metric_name="loss", mode="min")
+    save_training_checkpoint(manager, model=_TinyLM(), epoch=0, step=10, metrics={"loss": 0.9})
+    best = _TinyLM()
+    with torch.no_grad():
+        best.head.weight.fill_(7.0)
+    save_training_checkpoint(manager, model=best, epoch=1, step=20, metrics={"loss": 0.1})
+
+    restored = _TinyLM()
+    epoch, step = load_training_checkpoint(manager, "best", model=restored)
+
+    assert (epoch, step) == (1, 20)
+    assert torch.allclose(restored.head.weight, best.head.weight)
+
+
+def test_load_training_checkpoint_accepts_an_explicit_path(tmp_path):
+    manager = CheckpointManager(tmp_path, max_checkpoints=5)
+    save_training_checkpoint(manager, model=_TinyLM(), epoch=0, step=5, metrics={})
+    explicit_path = manager.checkpoints[0]["path"]
+
+    epoch, step = load_training_checkpoint(manager, str(explicit_path), model=_TinyLM())
+
+    assert (epoch, step) == (0, 5)
