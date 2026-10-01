@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 from thinkrl.algorithms.base import BaseRLHFAlgorithm
 from thinkrl.models.loss import GRPOLoss
@@ -44,6 +45,11 @@ class GRPOConfig:
     # Training Loop
     n_epochs: int = 1  # Number of optimization epochs per rollout batch (mu in Alg 1)
 
+    # LR schedule. "constant" keeps the pre-existing behaviour (flat LR, no warmup).
+    # Names match transformers.get_scheduler, so no custom schedule math is needed here.
+    lr_scheduler_type: str = "constant"
+    warmup_steps: int = 0
+
     # Stability
     clip_grad_norm: float = 1.0
     advantage_eps: float = 1e-8
@@ -54,6 +60,7 @@ class GRPOConfig:
     def __post_init__(self):
         assert self.group_size > 1, "group_size must be > 1 to compute variance"
         assert self.beta >= 0, "beta (KL coeff) must be non-negative"
+        assert self.warmup_steps >= 0, "warmup_steps must be non-negative"
 
 
 class GRPOAlgorithm(BaseRLHFAlgorithm):
@@ -69,6 +76,7 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         policy_model: nn.Module,
         ref_model: nn.Module | None = None,
         optimizer: Optimizer | None = None,
+        scheduler: LRScheduler | None = None,
         config: GRPOConfig | None = None,
         **kwargs,
     ):
@@ -90,6 +98,7 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         )
 
         self.config: GRPOConfig = config
+        self.scheduler = scheduler
 
         # Initialize Loss Function
         self.loss_fn = GRPOLoss(clip_eps=config.clip_epsilon, beta=config.beta)
@@ -251,6 +260,8 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         )
 
         self.optimizer.step()
+        if self.scheduler is not None:
+            self.scheduler.step()
 
         if self.use_vllm and self.vllm_client:
             self.sync_vllm_weights()
@@ -258,6 +269,7 @@ class GRPOAlgorithm(BaseRLHFAlgorithm):
         # Return scalars
         metrics = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in loss_dict.items()}
         metrics["grad_norm"] = grad_norm.item()
+        metrics["lr"] = self.optimizer.param_groups[0]["lr"]
 
         return metrics
 

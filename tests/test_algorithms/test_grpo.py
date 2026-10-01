@@ -55,6 +55,15 @@ def test_grpo_config_validation():
         GRPOConfig(group_size=1)  # Must be > 1
     with pytest.raises(AssertionError):
         GRPOConfig(beta=-0.1)  # Must be non-negative
+    with pytest.raises(AssertionError):
+        GRPOConfig(warmup_steps=-1)  # Must be non-negative
+
+
+def test_grpo_config_scheduler_defaults():
+    """Default stays flat-LR, matching the pre-scheduler behaviour."""
+    config = GRPOConfig()
+    assert config.lr_scheduler_type == "constant"
+    assert config.warmup_steps == 0
 
 
 # --- Tests for GRPO Algorithm Logic ---
@@ -190,6 +199,43 @@ def test_train_on_rollout_loop(grpo_algo):
             assert len(metrics) == 2
             assert metrics[0]["epoch"] == 0
             assert metrics[1]["epoch"] == 1
+
+
+def test_training_step_advances_an_attached_scheduler(grpo_algo):
+    """A scheduler attached to the algorithm must step once per optimizer step, not
+    once per rollout, so multi-epoch (n_epochs > 1) rollouts decay the LR correctly."""
+    scheduler = torch.optim.lr_scheduler.StepLR(grpo_algo.optimizer, step_size=1, gamma=0.5)
+    grpo_algo.scheduler = scheduler
+    lr_before = grpo_algo.optimizer.param_groups[0]["lr"]
+
+    batch = {
+        "input_ids": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "attention_mask": torch.ones((4, 5)),
+        "labels": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "rewards": torch.randn(4),
+    }
+
+    metrics = grpo_algo.training_step(batch, old_log_probs=torch.zeros(4, 5))
+
+    assert grpo_algo.optimizer.param_groups[0]["lr"] == pytest.approx(lr_before * 0.5)
+    assert metrics["lr"] == pytest.approx(lr_before * 0.5)
+
+
+def test_training_step_without_a_scheduler_is_unaffected(grpo_algo):
+    """No scheduler attached (the default) must reproduce the old flat-LR behaviour."""
+    assert grpo_algo.scheduler is None
+    lr_before = grpo_algo.optimizer.param_groups[0]["lr"]
+
+    batch = {
+        "input_ids": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "attention_mask": torch.ones((4, 5)),
+        "labels": torch.randint(0, 10, (4, 5), dtype=torch.long),
+        "rewards": torch.randn(4),
+    }
+
+    grpo_algo.training_step(batch, old_log_probs=torch.zeros(4, 5))
+
+    assert grpo_algo.optimizer.param_groups[0]["lr"] == lr_before
 
 
 def test_no_ref_model_warning():

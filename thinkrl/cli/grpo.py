@@ -40,6 +40,15 @@ def grpo(
     ] = None,
     output_dir: Annotated[Path, Option("--output-dir", "-o", help="Output directory")] = Path("./grpo_output"),
     learning_rate: Annotated[float, Option("--learning-rate", "--lr", help="Learning rate")] = 1e-6,
+    lr_scheduler_type: Annotated[
+        str,
+        Option(
+            "--lr-scheduler-type",
+            help="LR schedule: 'constant', 'linear', 'cosine', 'constant_with_warmup', ... "
+            "(any name transformers.get_scheduler accepts)",
+        ),
+    ] = "constant",
+    warmup_steps: Annotated[int, Option("--warmup-steps", help="LR warmup steps")] = 0,
     kl_coeff: Annotated[float, Option("--kl-coeff", help="KL penalty coefficient")] = 0.04,
     group_size: Annotated[int, Option("--group-size", "-g", help="Group size")] = 64,
     num_train_epochs: Annotated[int, Option("--num-train-epochs", "--epochs", help="Number of training epochs")] = 1,
@@ -154,6 +163,20 @@ def grpo(
         )
         raise typer.Exit(1)
 
+    from transformers.trainer_utils import SchedulerType
+
+    known_schedulers = {s.value for s in SchedulerType}
+    if lr_scheduler_type not in known_schedulers:
+        typer.echo(
+            f"Error: --lr-scheduler-type={lr_scheduler_type!r} is not one of {sorted(known_schedulers)}.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if warmup_steps < 0:
+        typer.echo(f"Error: --warmup-steps={warmup_steps} must be non-negative.", err=True)
+        raise typer.Exit(1)
+
     from thinkrl.utils import set_seed
 
     set_seed(seed)
@@ -165,6 +188,8 @@ def grpo(
     typer.echo(f"DeepSpeed: {deepspeed}")
     typer.echo(f"Group Size: {group_size}")
     typer.echo(f"Learning rate: {learning_rate}")
+    typer.echo(f"LR Scheduler: {lr_scheduler_type}")
+    typer.echo(f"Warmup Steps: {warmup_steps}")
     typer.echo(f"LoRA Rank: {lora_r}")
     typer.echo(f"LoRA Init: {lora_init}")
     typer.echo(f"KL Coeff: {kl_coeff}")
@@ -328,6 +353,8 @@ def grpo(
             group_size=group_size,
             beta=kl_coeff,
             n_epochs=num_train_epochs,
+            lr_scheduler_type=lr_scheduler_type,
+            warmup_steps=warmup_steps,
         ),
         use_vllm=(str(use_vllm).lower() == "true"),
         vllm_group_port=vllm_group_port,

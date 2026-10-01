@@ -70,6 +70,16 @@ def test_group_size_is_read_from_whichever_config_is_in_play():
     assert 'getattr(source_config, "group_size", None)' in source
 
 
+def test_lr_scheduler_fields_are_read_from_whichever_config_is_in_play():
+    """DrGRPOConfig (and PPO/DAPO/VAPO/PRIME) have no lr_scheduler_type or warmup_steps
+    field, so train() reading self.config.lr_scheduler_type unconditionally would raise
+    AttributeError for every one of them the moment train() is called."""
+    source = inspect.getsource(GRPOTrainer.train)
+
+    assert 'getattr(self.config, "lr_scheduler_type", "constant")' in source
+    assert 'getattr(self.config, "warmup_steps", 0)' in source
+
+
 @pytest.mark.parametrize("name", ROLLOUT_FAMILY)
 def test_each_algorithm_still_constructs(name):
     """Guards the claim that these five are constructible today, since #132 found COPO was

@@ -174,6 +174,21 @@ class GRPOTrainer:
             eval_batch_size: Prompts per generation batch during evaluation.
             eval_max_new_tokens: Generation budget per prompt during evaluation.
         """
+        # transformers.get_scheduler already covers constant/linear/cosine/warmup, so there
+        # is no reason to hand-roll a schedule here. n_epochs can run several optimizer
+        # steps per rollout, so the training-step upper bound (not the rollout-step count)
+        # is what the decay should be measured against. getattr defaults match #124's
+        # pattern: `algorithm=` can be a non-GRPO config (DAPO/VAPO/PRIME/Dr.GRPO) that
+        # never defined these fields, and "constant" reproduces the old flat-LR behaviour.
+        from transformers import get_scheduler
+
+        self.algorithm.scheduler = get_scheduler(
+            getattr(self.config, "lr_scheduler_type", "constant"),
+            optimizer=self.algorithm.optimizer,
+            num_warmup_steps=getattr(self.config, "warmup_steps", 0),
+            num_training_steps=steps * getattr(self.config, "n_epochs", 1),
+        )
+
         inspector = RolloutInspector(every=inspect_every, num_samples=inspect_samples)
         evaluator = build_periodic_evaluator(
             model=unwrap_model(self.algorithm.policy_model),
@@ -242,6 +257,7 @@ class GRPOTrainer:
                 checkpointer,
                 model=unwrap_model(self.algorithm.policy_model),
                 optimizer=getattr(self.algorithm, "optimizer", None),
+                scheduler=getattr(self.algorithm, "scheduler", None),
                 epoch=epoch,
                 step=step,
                 metrics=step_metrics,
