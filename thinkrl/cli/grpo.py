@@ -2,7 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
-from typing import Annotated
+from typing import Annotated, Any
 
 import torch
 from transformers import AutoTokenizer
@@ -13,6 +13,35 @@ try:
     from typer import Option
 except ImportError:
     sys.exit("Error: typer is required for CLI. Install with: pip install typer")
+
+# rich arrives with typer and is not a hard dependency; thinkrl.logging.rollout already
+# falls back to plain text the same way, so a run summary reads the same in a log file
+# or CI, where there is no terminal to render a table into anyway.
+try:
+    from rich.console import Console
+    from rich.table import Table
+
+    _RICH_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised by the plain-text path
+    Console = None
+    Table = None
+    _RICH_AVAILABLE = False
+
+
+def _print_run_summary(fields: dict[str, Any]) -> None:
+    """Render the resolved run config: a rich table on a real terminal, plain lines otherwise."""
+    use_rich = _RICH_AVAILABLE and sys.stdout.isatty()
+    if use_rich:  # pragma: no cover - needs a terminal
+        console = Console()
+        table = Table(title="GRPO Run Configuration", title_justify="left")
+        table.add_column("Setting", style="bold")
+        table.add_column("Value", overflow="fold")
+        for key, value in fields.items():
+            table.add_row(key, str(value))
+        console.print(table)
+    else:
+        for key, value in fields.items():
+            typer.echo(f"{key}: {value}")
 
 
 app = typer.Typer(
@@ -180,33 +209,40 @@ def grpo(
     from thinkrl.utils import set_seed
 
     set_seed(seed)
-    typer.echo(f"Model: {model}")
-    typer.echo(f"Ref Model: {ref_model}")
-    typer.echo(f"Dataset: {dataset}")
-    typer.echo(f"Dataset Source: {source}")
-    typer.echo(f"Output: {output_dir}")
-    typer.echo(f"DeepSpeed: {deepspeed}")
-    typer.echo(f"Group Size: {group_size}")
-    typer.echo(f"Learning rate: {learning_rate}")
-    typer.echo(f"LR Scheduler: {lr_scheduler_type}")
-    typer.echo(f"Warmup Steps: {warmup_steps}")
-    typer.echo(f"LoRA Rank: {lora_r}")
-    typer.echo(f"LoRA Init: {lora_init}")
-    typer.echo(f"KL Coeff: {kl_coeff}")
-    typer.echo(f"Epochs: {num_train_epochs}")
-    typer.echo(f"Batch size: {per_device_train_batch_size}")
-    typer.echo(f"BF16 Enabled: {bf16}")
-    typer.echo(f"FP16 Enabled: {fp16}")
-    typer.echo(f"VLLM Enabled: {use_vllm}")
-    typer.echo(f"Logging Backend: {logging_backend}")
-    typer.echo(f"Max Length: {max_length}")
-    typer.echo(f"Max Samples: {max_samples if max_samples else 'All'}")
-    typer.echo(f"System Prompt: {system_prompt}")
-    typer.echo()
 
     if fp16 and bf16:
         bf16 = False
         typer.echo("Note: Both BF16 and FP16 requested. Prioritizing FP16 (BF16 disabled).")
+
+    from thinkrl.logging.rollout import truncate
+
+    _print_run_summary(
+        {
+            "Model": model,
+            "Ref Model": ref_model,
+            "Dataset": dataset,
+            "Dataset Source": source,
+            "Output": output_dir,
+            "DeepSpeed": deepspeed,
+            "Group Size": group_size,
+            "Learning rate": learning_rate,
+            "LR Scheduler": lr_scheduler_type,
+            "Warmup Steps": warmup_steps,
+            "LoRA Rank": lora_r,
+            "LoRA Init": lora_init,
+            "KL Coeff": kl_coeff,
+            "Epochs": num_train_epochs,
+            "Batch size": per_device_train_batch_size,
+            "BF16 Enabled": bf16,
+            "FP16 Enabled": fp16,
+            "VLLM Enabled": use_vllm,
+            "Logging Backend": logging_backend,
+            "Max Length": max_length,
+            "Max Samples": max_samples if max_samples else "All",
+            "System Prompt": truncate(system_prompt, 120) if system_prompt else system_prompt,
+        }
+    )
+    typer.echo()
 
     if not ref_model:
         typer.echo("Error: a reference model is required (`--ref-model`).", err=True)
